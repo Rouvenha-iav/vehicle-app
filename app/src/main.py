@@ -21,13 +21,16 @@ import json
 import logging
 import signal
 
+# import grpc
 from sdv.util.log import (  # type: ignore
     get_opentelemetry_log_factory,
     get_opentelemetry_log_format,
 )
 from sdv.vdb.subscriptions import DataPointReply
-from sdv.vehicle_app import VehicleApp, subscribe_topic
+from sdv.vehicle_app import VehicleApp, subscribe_data_points, subscribe_topic
 from sdv_model import Vehicle, vehicle  # type: ignore
+
+from services import PedalPositionService
 
 # Configure the VehicleApp logger with the necessary log config and level.
 logging.setLogRecordFactory(get_opentelemetry_log_factory())
@@ -38,6 +41,9 @@ logger = logging.getLogger(__name__)
 GET_SPEED_REQUEST_TOPIC = "sampleapp/getSpeed"
 GET_SPEED_RESPONSE_TOPIC = "sampleapp/getSpeed/response"
 DATABROKER_SUBSCRIPTION_TOPIC = "sampleapp/currentSpeed"
+DATABROKER_PEDAL_POS_TOPIC = "sampleapp/currentPedalPos"
+GET_PEDAL_POS_REQUEST = "sampleapp/getPedalPos"
+GET_PEDAL_POS_RESPONSE = "sampleapp/getPedalPos/response"
 
 
 class SampleApp(VehicleApp):
@@ -59,32 +65,44 @@ class SampleApp(VehicleApp):
         # SampleApp inherits from VehicleApp.
         super().__init__()
         self.Vehicle = vehicle_client
+        self.pedal_pos_service = PedalPositionService()
 
     async def on_start(self):
         """Run when the vehicle app starts"""
         # This method will be called by the SDK when the connection to the
         # Vehicle DataBroker is ready.
         # Here you can subscribe for the Vehicle Signals update (e.g. Vehicle Speed).
-        await self.Vehicle.Speed.subscribe(self.on_speed_change)
-
-    async def on_speed_change(self, data: DataPointReply):
-        """The on_speed_change callback, this will be executed when receiving a new
-        vehicle signal updates."""
-        # Get the current vehicle speed value from the received DatapointReply.
-        # The DatapointReply containes the values of all subscribed DataPoints of
-        # the same callback.
-        vehicle_speed = data.get(self.Vehicle.Speed).value
-
-        # Do anything with the received value.
-        # Example:
-        # - Publishes current speed to MQTT Topic (i.e. DATABROKER_SUBSCRIPTION_TOPIC).
-        await self.publish_mqtt_event(
-            DATABROKER_SUBSCRIPTION_TOPIC,
-            json.dumps({"speed": vehicle_speed}),
+        await self.Vehicle.Chassis.Accelerator.PedalPosition.subscribe(
+            self.on_pedal_pos_change
         )
 
-    @subscribe_topic(GET_SPEED_REQUEST_TOPIC)
-    async def on_get_speed_request_received(self, data: str) -> None:
+    # async def on_pedal_pos_change(self, data: DataPointReply):
+    #     """The on_pedal_pos_change callback, this will be executed when receiving a new
+    #     vehicle signal updates."""
+    #     # Get the current vehicle speed value from the received DatapointReply.
+    #     # The DatapointReply containes the values of all subscribed DataPoints of
+    #     # the same callback.
+    #     # vehicle_speed = data.get(self.Vehicle.Speed).value
+    #     acc_pedal_pos = data.get(self.Vehicle.Chassis.Accelerator.PedalPosition).value
+
+    #     # Do anything with the received value.
+    #     # Example:
+    #     # - Publishes current speed to MQTT Topic (i.e. DATABROKER_SUBSCRIPTION_TOPIC).
+    #     await self.publish_mqtt_event(
+    #         DATABROKER_PEDAL_POS_TOPIC,
+    #         json.dumps({"position": acc_pedal_pos}),
+    #     )
+    
+    @subscribe_data_points("Vehicle.Chassis.Accelerator.PedalPosition")
+    async def on_pedal_pos_change(self, data: DataPointReply):
+        response_topic = "sampleapp/currentPedalPos"
+        response_data = {"position": data.get(self.Vehicle.Chassis.Accelerator.PedalPosition).value}
+
+        # await self.publish_mqtt_event(response_topic, json.dumps(response_data))
+        await self.pedal_pos_service.set_data(response_data["position"])
+              
+    @subscribe_topic(GET_PEDAL_POS_REQUEST)
+    async def on_get_pedal_pos_request_received(self, data: str) -> None:
         """The subscribe_topic annotation is used to subscribe for incoming
         PubSub events, e.g. MQTT event for GET_SPEED_REQUEST_TOPIC.
         """
@@ -92,23 +110,22 @@ class SampleApp(VehicleApp):
         # Use the logger with the preferred log level (e.g. debug, info, error, etc)
         logger.debug(
             "PubSub event for the Topic: %s -> is received with the data: %s",
-            GET_SPEED_REQUEST_TOPIC,
+            GET_PEDAL_POS_REQUEST,
             data,
         )
 
-        # Getting current speed from VehicleDataBroker using the DataPoint getter.
-        vehicle_speed = (await self.Vehicle.Speed.get()).value
+        current_data = await self.pedal_pos_service.get_data()
 
         # Do anything with the speed value.
         # Example:
         # - Publishe the vehicle speed to MQTT topic (i.e. GET_SPEED_RESPONSE_TOPIC).
         await self.publish_mqtt_event(
-            GET_SPEED_RESPONSE_TOPIC,
+            GET_PEDAL_POS_RESPONSE,
             json.dumps(
                 {
                     "result": {
                         "status": 0,
-                        "message": f"""Current Speed = {vehicle_speed}""",
+                        "message": f"""Current Pos = {current_data}""",
                     },
                 }
             ),
